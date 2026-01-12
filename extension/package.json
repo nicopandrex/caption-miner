@@ -1,0 +1,27 @@
+{
+  "name": "caption-miner-extension",
+  "version": "1.0.0",
+  "description": "Language learning sentence mining Chrome extension",
+  "type": "module",
+  "scripts": {
+    "dev": "vite build --watch --mode development",
+    "build": "tsc && vite build",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@types/chrome": "^0.0.277",
+    "jieba-wasm": "^0.0.2",
+    "jszip": "^3.10.1",
+    "pinyin-pro": "^3.24.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  }
+}

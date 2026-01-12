@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Caption Miner",
+  "version": "1.0.0",
+  "description": "Language learning sentence mining tool for YouTube",
+  "permissions": [
+    "storage",
+    "offscreen",
+    "tabCapture",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/watch*"],
+      "js": ["content-youtube.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
+  "action": {
+    "default_title": "Open Caption Miner"
+  }
+}

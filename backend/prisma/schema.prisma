@@ -1,0 +1,79 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  decks Deck[]
+  cards Card[]
+
+  @@map("users")
+}
+
+model Deck {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  name      String
+  language  String   @default("zh")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cards Card[]
+
+  @@map("decks")
+}
+
+model Card {
+  id             String   @id @default(uuid())
+  deckId         String   @map("deck_id")
+  userId         String   @map("user_id")
+  mode           String
+  provider       String
+  videoId        String?  @map("video_id")
+  videoUrl       String?  @map("video_url")
+  videoTitle     String?  @map("video_title")
+  channel        String?
+  cueStart       Decimal? @map("cue_start") @db.Decimal(10, 3)
+  cueEnd         Decimal? @map("cue_end") @db.Decimal(10, 3)
+  targetWord     String?  @map("target_word")
+  sentence       String?
+  sentenceCloze  String?  @map("sentence_cloze")
+  pinyin         String?
+  definition     String?
+  translation    String?
+  tags           String[]
+  audioUrl       String?  @map("audio_url")
+  audioMime      String?  @map("audio_mime")
+  audioDuration  Decimal? @map("audio_duration") @db.Decimal(10, 3)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  deck Deck @relation(fields: [deckId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([deckId])
+  @@index([userId])
+  @@map("cards")
+}
+
+model TranslationCache {
+  id             String   @id @default(uuid())
+  hash           String   @unique
+  sourceLang     String   @map("source_lang")
+  targetLang     String   @map("target_lang")
+  sourceText     String   @map("source_text")
+  translatedText String   @map("translated_text")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([hash])
+  @@map("translation_cache")
+}
