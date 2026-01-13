@@ -1,98 +1,62 @@
 import { DictionaryEntry } from '../types';
 
-// Simplified CC-CEDICT mock data structure
-// In production, this would load from a compressed JSON file
+// Local CC-CEDICT dictionary for offline lookups
 interface CEDICTEntry {
-  traditional: string;
-  simplified: string;
   pinyin: string;
   definitions: string[];
 }
 
-let dictionary: Map<string, CEDICTEntry> | null = null;
-let loading = false;
+let dictionaryCache: Map<string, CEDICTEntry> | null = null;
+let isLoading = false;
 
-// Mock dictionary with common words for demo
-const MOCK_DICTIONARY: CEDICTEntry[] = [
-  {
-    traditional: '你好',
-    simplified: '你好',
-    pinyin: 'nǐ hǎo',
-    definitions: ['hello', 'hi'],
-  },
-  {
-    traditional: '世界',
-    simplified: '世界',
-    pinyin: 'shì jiè',
-    definitions: ['world'],
-  },
-  {
-    traditional: '中文',
-    simplified: '中文',
-    pinyin: 'zhōng wén',
-    definitions: ['Chinese language'],
-  },
-  {
-    traditional: '學習',
-    simplified: '学习',
-    pinyin: 'xué xí',
-    definitions: ['to study', 'to learn'],
-  },
-  {
-    traditional: '音樂',
-    simplified: '音乐',
-    pinyin: 'yīn yuè',
-    definitions: ['music'],
-  },
-];
-
+// Load dictionary from bundled JSON file
 export async function loadDictionary(): Promise<void> {
-  if (dictionary || loading) return;
+  if (dictionaryCache || isLoading) return;
   
-  loading = true;
+  isLoading = true;
   
   try {
-    // In production, load from compressed JSON:
-    // const response = await fetch(chrome.runtime.getURL('assets/cedict.json.gz'));
-    // const data = await response.json();
+    const response = await fetch(chrome.runtime.getURL('cedict.json'));
+    const data: Record<string, CEDICTEntry> = await response.json();
     
-    // For now, use mock data
-    dictionary = new Map();
-    for (const entry of MOCK_DICTIONARY) {
-      dictionary.set(entry.simplified, entry);
-      if (entry.traditional !== entry.simplified) {
-        dictionary.set(entry.traditional, entry);
-      }
+    dictionaryCache = new Map();
+    for (const [word, entry] of Object.entries(data)) {
+      dictionaryCache.set(word, entry);
     }
+    
+    console.log('📚 Dictionary loaded with', dictionaryCache.size, 'entries');
   } catch (error) {
     console.error('Failed to load dictionary:', error);
-    dictionary = new Map();
+    dictionaryCache = new Map(); // Empty map as fallback
   } finally {
-    loading = false;
+    isLoading = false;
   }
 }
 
 export async function lookup(word: string): Promise<DictionaryEntry | null> {
-  if (!dictionary) {
+  // Load dictionary on first use
+  if (!dictionaryCache && !isLoading) {
     await loadDictionary();
   }
   
-  if (!dictionary) return null;
-  
-  const entry = dictionary.get(word);
-  if (!entry) {
-    // Try to find longest prefix match
-    for (let len = word.length - 1; len > 0; len--) {
-      const prefix = word.substring(0, len);
-      const match = dictionary.get(prefix);
-      if (match) return match;
-    }
-    return null;
+  // Wait for loading to complete
+  while (isLoading) {
+    await new Promise(resolve => setTimeout(resolve, 50));
   }
   
-  return entry;
+  if (!dictionaryCache) return null;
+  
+  const entry = dictionaryCache.get(word);
+  if (!entry) return null;
+  
+  return {
+    traditional: word,
+    simplified: word,
+    pinyin: entry.pinyin,
+    definitions: entry.definitions
+  };
 }
 
 export async function isLoaded(): Promise<boolean> {
-  return dictionary !== null;
+  return dictionaryCache !== null;
 }

@@ -5,6 +5,17 @@
 // ============================================================================
 
 import type { CardMode, StudySession } from '../lib/types';
+import { pinyin } from 'pinyin-pro';
+import { lookup as dictionaryLookup } from '../lib/chinese/dictionary';
+
+// Helper to get auth token from storage
+async function getAuthToken(): Promise<string | null> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['authToken'], (result) => {
+      resolve(result.authToken || null);
+    });
+  });
+}
 
 console.log("🎬 CM: Content script loaded");
 
@@ -19,6 +30,7 @@ let activeSession: StudySession | null = null;
 let currentSegments: string[] = []; // Word segments
 let selectedTokens: Set<number> = new Set(); // Selected token indices
 let currentCaption = '';
+let charSelectionMode = new Map<number, boolean>(); // Track which tokens are in char mode
 let tooltipElement: HTMLDivElement | null = null;
 let cardButtonElement: HTMLDivElement | null = null;
 
@@ -184,15 +196,47 @@ function createTooltip() {
 async function showTooltip(word: string, element: HTMLElement) {
   if (!tooltipElement) return;
 
-  // Simple tooltip - just show the word for now
-  // TODO: Add pinyin and definition via API call
+  // Get pinyin for Chinese characters
+  let pinyinText = '';
+  if (/[\u4e00-\u9fff]/.test(word)) {
+    try {
+      pinyinText = pinyin(word, { toneType: 'symbol', type: 'array' }).join(' ');
+    } catch (error) {
+      console.warn('🎬 CM: Pinyin error:', error);
+    }
+  }
+
+  // Get translation - try local dictionary first for short words, fallback to DeepL
+  let translation = '';
+  
+  if (word.length <= 3) {
+    // Try local dictionary for short words
+    const dictEntry = await dictionaryLookup(word);
+    if (dictEntry && dictEntry.definitions && dictEntry.definitions.length > 0) {
+      translation = dictEntry.definitions.slice(0, 3).join('; ');
+    } else {
+      // Fallback to DeepL if not in dictionary
+      translation = await getDeepLTranslation(word);
+    }
+  } else {
+    // Use DeepL for longer phrases
+    translation = await getDeepLTranslation(word);
+  }
+
+  // Update tooltip content
   tooltipElement.innerHTML = `
-    <div style="font-size: 18px; font-weight: 600; color: #60a5fa;">
+    <div style="font-size: 20px; font-weight: 700; color: #60a5fa; margin-bottom: 8px;">
       ${word}
     </div>
-    <div style="font-size: 14px; color: #d1d5db; margin-top: 4px;">
-      Click to select
+    ${pinyinText ? `
+      <div style="font-size: 16px; color: #fbbf24; margin-bottom: 8px; font-weight: 500;">
+        ${pinyinText}
+      </div>
+    ` : ''}
+    <div style="font-size: 15px; color: #e5e7eb; line-height: 1.4;">
+      ${translation}
     </div>
+    ${word.length === 1 ? '<div style="font-size: 12px; color: #9ca3af; margin-top: 6px; font-style: italic;">Single character - click multiple to see combined meaning</div>' : ''}
   `;
 
   // Position tooltip above element
@@ -209,6 +253,58 @@ function hideTooltip() {
   }
 }
 
+async function getDeepLTranslation(text: string): Promise<string> {
+  try {
+    const authToken = await getAuthToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    
+    const response = await fetch('http://localhost:3000/translate', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        text: text,
+        sourceLang: 'zh',
+        targetLang: 'en',
+      }),
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      return data.translation || '';
+    }
+    return 'Translation unavailable';
+  } catch (error) {
+    console.warn('🎬 CM: DeepL translation failed:', error);
+    return 'Translation unavailable (offline)';
+  }
+}
+
+function getSelectedText(): string {
+  if (selectedTokens.size === 0) return '';
+  
+  const selectedIndices = Array.from(selectedTokens).sort((a, b) => a - b);
+  let text = '';
+  
+  selectedIndices.forEach(idx => {
+    const tokenSpan = overlayRoot?.querySelector(`[data-index="${idx}"]`) as HTMLSpanElement;
+    if (tokenSpan) {
+      const charSelectedSpans = tokenSpan.querySelectorAll('.char-selected');
+      if (charSelectedSpans.length > 0) {
+        charSelectedSpans.forEach(charSpan => {
+          text += charSpan.textContent || '';
+        });
+      } else {
+        text += currentSegments[idx];
+      }
+    }
+  });
+  
+  return text;
+}
+
 // ============================================================================
 // CAPTION RENDERING
 // ============================================================================
@@ -219,6 +315,7 @@ async function renderOverlay(captionText: string) {
   overlayRoot.innerHTML = '';
   currentCaption = captionText;
   selectedTokens.clear();
+  charSelectionMode.clear();
 
   if (!captionText || captionText === '') {
     return; // Don't show empty overlay
@@ -266,7 +363,7 @@ async function renderOverlay(captionText: string) {
       position: 'relative',
     });
 
-    // Hover: show tooltip
+    // Hover: show tooltip (show combined text if multiple selections exist)
     span.addEventListener('mouseenter', async function(this: HTMLSpanElement, _e: MouseEvent) {
       if (!this.classList.contains('selected')) {
         this.style.background = 'rgba(59, 130, 246, 0.7)';
@@ -274,7 +371,9 @@ async function renderOverlay(captionText: string) {
         this.style.transform = 'scale(1.1)';
         this.style.boxShadow = '0 0 10px rgba(59, 130, 246, 0.8)';
       }
-      await showTooltip(segment, this);
+      // If multiple tokens selected, show combined text, otherwise show hovered segment
+      const displayText = selectedTokens.size > 1 ? getSelectedText() : segment;
+      await showTooltip(displayText, this);
     });
 
     span.addEventListener('mouseleave', function(this: HTMLSpanElement) {
@@ -287,24 +386,50 @@ async function renderOverlay(captionText: string) {
       hideTooltip();
     });
 
-    // Click to toggle selection
+    // Click to toggle selection, double-click for character mode
+    let clickTimer: NodeJS.Timeout | null = null;
     span.addEventListener('click', function(this: HTMLSpanElement, e: MouseEvent) {
       e.stopPropagation();
       e.preventDefault();
       
       const idx = parseInt(this.dataset.index || '0');
       
-      if (selectedTokens.has(idx)) {
-        selectedTokens.delete(idx);
-        applyUnselectedStyle(this);
-        console.log(`🎬 CM: Token deselected: "${segment}"`);
+      // Check for double-click
+      if (clickTimer) {
+        // Double click - toggle character selection mode
+        clearTimeout(clickTimer);
+        clickTimer = null;
+        
+        if (segment.length > 1) {
+          const isCharMode = charSelectionMode.get(idx);
+          if (isCharMode) {
+            // Exit char mode - revert to word
+            charSelectionMode.delete(idx);
+            renderCharacterMode(this, segment, idx, false);
+          } else {
+            // Enter char mode
+            charSelectionMode.set(idx, true);
+            renderCharacterMode(this, segment, idx, true);
+          }
+        }
       } else {
-        selectedTokens.add(idx);
-        applySelectedStyle(this);
-        console.log(`🎬 CM: Token selected: "${segment}"`);
+        // Single click - toggle selection
+        clickTimer = setTimeout(() => {
+          clickTimer = null;
+          
+          if (selectedTokens.has(idx)) {
+            selectedTokens.delete(idx);
+            applyUnselectedStyle(this);
+            console.log(`🎬 CM: Token deselected: "${segment}"`);
+          } else {
+            selectedTokens.add(idx);
+            applySelectedStyle(this);
+            console.log(`🎬 CM: Token selected: "${segment}"`);
+          }
+          
+          updateCardButton();
+        }, 250);
       }
-      
-      updateCardButton();
     });
 
     captionBox.appendChild(span);
@@ -332,6 +457,89 @@ function applyUnselectedStyle(span: HTMLSpanElement) {
   span.style.boxShadow = 'none';
 }
 
+function renderCharacterMode(spanElement: HTMLSpanElement, word: string, tokenIdx: number, enterMode: boolean) {
+  if (!enterMode) {
+    // Exit char mode - restore original word display
+    spanElement.innerHTML = '';
+    spanElement.textContent = word;
+    if (selectedTokens.has(tokenIdx)) {
+      applySelectedStyle(spanElement);
+    } else {
+      applyUnselectedStyle(spanElement);
+    }
+    return;
+  }
+  
+  // Enter char mode - break into individual characters
+  spanElement.innerHTML = '';
+  spanElement.style.display = 'inline-flex';
+  spanElement.style.gap = '2px';
+  spanElement.style.background = 'rgba(59, 130, 246, 0.2)';
+  spanElement.style.border = '2px solid rgba(96, 165, 250, 0.5)';
+  
+  const chars = word.split('');
+  chars.forEach((char, charIdx) => {
+    const charSpan = document.createElement('span');
+    charSpan.textContent = char;
+    charSpan.dataset.char = char;
+    charSpan.dataset.charIndex = String(charIdx);
+    
+    Object.assign(charSpan.style, {
+      display: 'inline-block',
+      cursor: 'pointer',
+      padding: '2px 4px',
+      borderRadius: '4px',
+      transition: 'all 0.15s ease',
+      border: '1px solid transparent',
+    });
+    
+    // Char hover
+    charSpan.addEventListener('mouseenter', async function(this: HTMLSpanElement) {
+      if (!this.classList.contains('char-selected')) {
+        this.style.background = 'rgba(59, 130, 246, 0.6)';
+        this.style.border = '1px solid rgba(96, 165, 250, 1)';
+      }
+      await showTooltip(char, this);
+    });
+    
+    charSpan.addEventListener('mouseleave', function(this: HTMLSpanElement) {
+      if (!this.classList.contains('char-selected')) {
+        this.style.background = 'transparent';
+        this.style.border = '1px solid transparent';
+      }
+      hideTooltip();
+    });
+    
+    // Char click to select individual character
+    charSpan.addEventListener('click', function(this: HTMLSpanElement, e: MouseEvent) {
+      e.stopPropagation();
+      e.preventDefault();
+      
+      if (this.classList.contains('char-selected')) {
+        this.classList.remove('char-selected');
+        this.style.background = 'transparent';
+        this.style.border = '1px solid transparent';
+      } else {
+        this.classList.add('char-selected');
+        this.style.background = 'rgba(34, 197, 94, 0.7)';
+        this.style.border = '1px solid rgba(34, 197, 94, 1)';
+      }
+      
+      // Update main token selection based on any chars being selected
+      const anySelected = Array.from(spanElement.querySelectorAll('.char-selected')).length > 0;
+      if (anySelected) {
+        selectedTokens.add(tokenIdx);
+      } else {
+        selectedTokens.delete(tokenIdx);
+      }
+      
+      updateCardButton();
+    });
+    
+    spanElement.appendChild(charSpan);
+  });
+}
+
 // ============================================================================
 // SIMPLE TOKENIZATION
 // ============================================================================
@@ -342,7 +550,7 @@ async function initJieba() {
   
   try {
     const jieba = await import('jieba-wasm');
-    // jieba-wasm exports functions directly, not a Jieba class
+    jiebaInstance = jieba; // Cache the instance
     console.log("🎬 CM: Jieba loaded ✓");
     return jieba;
   } catch (error) {
@@ -363,7 +571,9 @@ async function smartTokenize(text: string): Promise<string[]> {
         // jieba-wasm's cut function
         const segments = jieba.cut(text, true); // true = use HMM
         // Filter out empty strings and whitespace
-        return segments.filter((s: string) => s.trim().length > 0);
+        const filtered = segments.filter((s: string) => s.trim().length > 0);
+        console.log('🎬 CM: Jieba tokenized:', text, '→', filtered);
+        return filtered;
       } catch (error) {
         console.warn('🎬 CM: Jieba segmentation failed:', error);
       }
@@ -465,9 +675,27 @@ async function handleCreateCard(mode: CardMode) {
   }
 
   try {
-    // Get selected text
+    // Get selected text (either full tokens or individual characters)
     const selectedIndices = Array.from(selectedTokens).sort((a, b) => a - b);
-    const targetWord = selectedIndices.map(i => currentSegments[i]).join('');
+    let targetWord = '';
+    
+    // Collect selected text from DOM to handle character-level selections
+    selectedIndices.forEach(idx => {
+      const tokenSpan = overlayRoot?.querySelector(`[data-index="${idx}"]`) as HTMLSpanElement;
+      if (tokenSpan) {
+        // Check if in character selection mode
+        const charSelectedSpans = tokenSpan.querySelectorAll('.char-selected');
+        if (charSelectedSpans.length > 0) {
+          // Get only selected characters
+          charSelectedSpans.forEach(charSpan => {
+            targetWord += charSpan.textContent || '';
+          });
+        } else {
+          // Get full token
+          targetWord += currentSegments[idx];
+        }
+      }
+    });
     
     // Get video info
     const videoId = new URLSearchParams(location.search).get('v') || '';
@@ -475,9 +703,37 @@ async function handleCreateCard(mode: CardMode) {
     const video = document.querySelector('video');
     const currentTime = video?.currentTime || 0;
 
-    // Pinyin and definition - leave empty for now, backend can fetch these
-    const pinyin = '';
-    const definition = '';
+    // Get pinyin for the target word
+    let pinyinText = '';
+    if (/[\u4e00-\u9fff]/.test(targetWord)) {
+      try {
+        pinyinText = pinyin(targetWord, { toneType: 'symbol', type: 'array' }).join(' ');
+      } catch (error) {
+        console.warn('🎬 CM: Pinyin generation failed:', error);
+      }
+    }
+
+    // Get translation for the word - try dictionary first
+    let translation = '';
+    
+    if (targetWord.length <= 3) {
+      const dictEntry = await dictionaryLookup(targetWord);
+      if (dictEntry && dictEntry.definitions && dictEntry.definitions.length > 0) {
+        translation = dictEntry.definitions.slice(0, 3).join('; ');
+      } else {
+        translation = await getDeepLTranslation(targetWord);
+      }
+    } else {
+      translation = await getDeepLTranslation(targetWord);
+    }
+
+    // Get sentence translation
+    let sentenceTranslation = '';
+    try {
+      sentenceTranslation = await getDeepLTranslation(currentCaption);
+    } catch (error) {
+      console.warn('🎬 CM: Sentence translation failed:', error);
+    }
 
     // Create sentence with cloze
     let sentenceCloze = currentCaption;
@@ -498,8 +754,9 @@ async function handleCreateCard(mode: CardMode) {
       targetWord,
       sentence: currentCaption,
       sentenceCloze,
-      pinyin,
-      definition,
+      pinyin: pinyinText,
+      definition: translation,
+      translation: sentenceTranslation,
       tags: [],
     };
 

@@ -12,6 +12,7 @@
     "@types/chrome": "^0.0.277",
     "jieba-wasm": "^0.0.2",
     "jszip": "^3.10.1",
+    "pinyin": "^4.0.0",
     "pinyin-pro": "^3.24.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

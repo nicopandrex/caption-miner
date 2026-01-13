@@ -29,5 +29,11 @@
   },
   "action": {
     "default_title": "Open Caption Miner"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["cedict.json"],
+      "matches": ["https://www.youtube.com/*"]
+    }
+  ]
 }
