@@ -363,7 +363,7 @@ async function renderOverlay(captionText: string) {
       position: 'relative',
     });
 
-    // Hover: show tooltip (show combined text if multiple selections exist)
+    // Hover: show tooltip
     span.addEventListener('mouseenter', async function(this: HTMLSpanElement, _e: MouseEvent) {
       if (!this.classList.contains('selected')) {
         this.style.background = 'rgba(59, 130, 246, 0.7)';
@@ -371,8 +371,11 @@ async function renderOverlay(captionText: string) {
         this.style.transform = 'scale(1.1)';
         this.style.boxShadow = '0 0 10px rgba(59, 130, 246, 0.8)';
       }
-      // If multiple tokens selected, show combined text, otherwise show hovered segment
-      const displayText = selectedTokens.size > 1 ? getSelectedText() : segment;
+      // If hovering over a selected item with multiple selections, show combined text
+      // Otherwise show just the hovered segment
+      const displayText = (this.classList.contains('selected') && selectedTokens.size > 1) 
+        ? getSelectedText() 
+        : segment;
       await showTooltip(displayText, this);
     });
 
